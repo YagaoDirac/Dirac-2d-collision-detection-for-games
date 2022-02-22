@@ -4,14 +4,14 @@
 import { vec2,AABB } from './Linear Algebra of Dirac'
 
 //First thing first. The collision group has to be done first and not modify any more.
-type CollisionGroupNames = "player" | "pl attack" | "enemy" | "enemy bullet" | "wall";
+type CollisionGroupNames = "player" | "pl attack" | "enemy" | "enemy bullet" | "wall";//|"debug self overlap";
 class CollisionGroup {
 	name: CollisionGroupNames;
 	collidesSelf: boolean;
 	overlapsSelf: boolean;
 	i = -1;//index in the Mng.
-	overlap: number[] = [];
-	collide: number[] = [];
+	overlapInd: boolean[] = [];
+	collideInd: boolean[] = [];
 	overlapNames: string[] = [];
 	collideNames: string[] = [];
 	constructor(name: CollisionGroupNames, collidesSelf: boolean, overlapsSelf: boolean) {
@@ -24,6 +24,8 @@ class CollisionGroup {
 		const allNames = this.overlapNames.concat(this.collideNames);
 		if (new Set(allNames).size !== allNames.length) { throw new Error("Some name is duplicated in either overlapNames or collideNames.")}
 	}
+	collides(i: number) { return this.collideInd[i]; }
+	overlaps(i: number) { return this.overlapInd[i]; }
 }
 class CollisionGroupMng {
 	_groups: CollisionGroup[] = [];
@@ -40,11 +42,16 @@ class CollisionGroupMng {
 		this._freeze = true;
 
 		this._groups.forEach((g) => {
+			for (let i = 0; i < this._groups.length; i++) {
+				g.collideInd.push(false);
+				g.overlapInd.push(false);
+			}
+
 			if (g.collidesSelf) {
-				g.collide.push(g.i);
+				g.collideInd[g.i] = true;
 			} else {
 				if (g.overlapsSelf) {
-					g.overlap.push(g.i);
+					g.overlapInd[g.i] = true;
 				}
 			}
 		})
@@ -63,8 +70,8 @@ class CollisionGroupMng {
 					});
 				}
 				if (r >= 0) {
-					g1.collide.push(g2.i);
-					g2.collide.push(g1.i);
+					g1.collideInd[g2.i] = true;
+					g2.collideInd[g1.i] = true;
 					continue;
 				}
 
@@ -77,8 +84,8 @@ class CollisionGroupMng {
 					});
 				}
 				if (r >= 0) {
-					g1.overlap.push(g2.i);
-					g2.overlap.push(g1.i);
+					g1.overlapInd[g2.i] = true;
+					g2.overlapInd[g1.i] = true;
 					continue;
 				}
 			}//for i2}
@@ -109,26 +116,30 @@ const collisionGroupMng = new CollisionGroupMng();
 //Add all the group here.
 {
 	//const groupNames = ["player", "pl attack", "enemy", "enemy bullet", "wall"] as const;
-	let g = new CollisionGroup("player",false,false);
-	g.overlapNames.push("enemy bullet");
-	collisionGroupMng.add(g);
+	//The best sequence is according to the number, greater in the front, less in the end.
+	let
 	g = new CollisionGroup("enemy bullet", false, false);
 	g.overlapNames.push("player");
 	collisionGroupMng.add(g);
-
 	g = new CollisionGroup("enemy", false, false);
 	g.overlapNames.push("pl attack");
-	collisionGroupMng.add(g);
-	g = new CollisionGroup("pl attack", false, false);
-	g.overlapNames.push("enemy");
 	collisionGroupMng.add(g);
 
 	//g = new CollisionGroup("wall", false, false);
 	//g.collideNames.push("player");
 	//collisionGroupMng.add(g);
 
-	collisionGroupMng.initializationFinish();
+	g = new CollisionGroup("pl attack", false, false);
+	g.overlapNames.push("enemy");
+	collisionGroupMng.add(g);
+	g = new CollisionGroup("player", false, false);
+	g.overlapNames.push("enemy bullet");
+	collisionGroupMng.add(g);
 
+	//g = new CollisionGroup("debug self overlap", false, true);
+	//collisionGroupMng.add(g);
+
+	collisionGroupMng.initializationFinish();
 }
 
 
@@ -148,7 +159,8 @@ abstract class ColliderBase {
 	ti: typeIndexValues;//type index. for a collider of type 1 and 2, do 2.detect(1).
 	//static = false;to do.
 	constructor(p: { g: CollisionGroup, ti: typeIndexValues }) { this.g = p.g; this.ti = p.ti; }
-	abstract getAABB():AABB;
+	abstract getAABB(): AABB;
+	groupIndex(): number{ return this.g.i; }
 }
 class Collider_circle extends ColliderBase{
 	o: vec2;
@@ -189,9 +201,11 @@ class CollisionDetectorProp {
 //The event
 type CollisionAlgoFunc = { (h: ColliderBase, g: ColliderBase): void };
 class CollisionAlgo {
-	static apply(c1: ColliderBase, c2: ColliderBase) {
-		const c = c1.g.collide.includes(c2.g.i);
-		const o = c1.g.overlap.includes(c2.g.i);
+	
+
+	static apply(c1: ColliderBase, c2: ColliderBase, isCollision:boolean) {
+		const c = c1.g.collides(c2.g.i);
+		const o = c1.g.overlaps(c2.g.i);
 		if ((!c) && (!o)) { return; }
 		if (c1.ti >= c2.ti) {
 			const f = CollisionAlgo.funcByTI(c1.ti, c2.ti);
@@ -226,10 +240,55 @@ class CollisionAlgo {
 }
 
 type __CDNodeChildNodeIndex = (0 | 1 | 2 | 3);
+type __CDNodeChildNodeIndexWith4 = __CDNodeChildNodeIndex|4;
+class CDGroupInNode {
+	readonly g: CollisionGroup;
+	c: ColliderBase[] = [];
+	constructor(g: CollisionGroup) { this.g = g;}
+	_clearEvent() {
+		this.c.forEach((c) => { c.events = [];})
+	}
+
+	static detect(g1: CDGroupInNode, g2: CDGroupInNode, gi1 = g1.g.i, gi2 = g2.g.i) {
+		//if ((g1.c.length === 0) || (g2.c.length === 0)) { return;}//A bit duplicated.
+		const g1_g = g1.g;
+		const isC = g1_g.collides(gi2);
+		const isO = g1_g.overlaps(gi2);
+		if ((!isC) && (!isO)) { return; }
+
+		g1.c.forEach((c1) => {
+			g2.c.forEach((c2) => {
+				CollisionAlgo.apply(c1, c2, isC);
+			})
+		})
+
+	}
+	static detectInner(gin: CDGroupInNode, gi: number = gin.g.i) {
+		const g = gin.g;
+		const isC = g.collidesSelf;
+		const isO = g.overlapsSelf;
+		if ((!isC) && (!isO)) { return; }
+		//if (gin.c.length <= 1) { return; }//A bit duplicated.
+
+		gin.c.forEach((c1, i, arr) => {
+			for (let _i = i + 1; _i < arr.length; _i++) {
+				const c2 = arr[_i];
+				CollisionAlgo.apply(c1, c2, isC);
+			}
+		})
+	}
+
+
+
+
+
+
+
+}
 class CDNode {
 	layer:number;//0 for root node. Positive int for others.
 	c: [(CDNode | null),(CDNode | null), (CDNode | null), (CDNode | null)] = [null, null, null, null];// x y, x yn, xn y, xn yn
-	d: ColliderBase[] = [];
+	g: CDGroupInNode[] = [];
 	border: AABB;
 	midpoint: vec2;
 	cont: CollisionDetector;
@@ -250,15 +309,49 @@ class CDNode {
 		}
 		return false;
 	}
-	innerDetect(){
-		if (this.d.length <= 1) { return []; }
-		for (var i1 = 0; i1 < this.d.length - 1; i1++) {
-			const c1 = this.d[i1];
-			for (var i2 = i1+1; i2 < this.d.length; i2++) {
-				const c2 = this.d[i2];
-				CollisionAlgo.apply(c1, c2);
+	innerDetect() {
+		this.g.forEach((g, gi) => {
+			if (g.c.length <= 1) {
+				return;
 			}
-		}
+			CDGroupInNode.detectInner(g, gi)
+
+		//	const g = _g.g;
+		//	const isC = g.collidesSelf;
+		//	const isO = g.overlapsSelf;
+		//	if ((!isC) && (!isO)) { return; }
+		//	if (_g.c.length <= 1) { return; }
+		//
+		//	_g.c.forEach((c1, i, arr) => {
+		//		for (let _i = i + 1; _i < arr.length; _i++) {
+		//			const c2 = arr[_i];
+		//			CollisionAlgo.apply(c1, c2, isC);
+		//		}
+		//	})
+		})
+
+		//if (this.g.length <= 1) { return []; }    comment this line or not, both are ok.
+		this.g.forEach((g1, gi1, arr) => {
+			if (g1.c.length === 0) { return;}
+			for (let gi2 = gi1 + 1; gi2 < arr.length; gi2++) {
+				const g2 = this.g[gi2];
+				if (g2.c.length === 0) { continue;}
+				CDGroupInNode.detect(g1, g2, gi1, gi2);
+
+
+				//const g2 = this.g[gi2];
+				//const g1_g = g1.g;
+				//const isC = g1_g.collides(gi2);
+				//const isO = g1_g.overlaps(gi2);
+				//if ((!isC) && (!isO)) { return; }
+				//
+				//g1.c.forEach((c1) => {
+				//	g2.c.forEach((c2) => {
+				//		CollisionAlgo.apply(c1, c2, isC);
+				//	})
+				//})
+			}
+		})
 	}
 
 	add(c: ColliderBase, aabb:AABB = c.getAABB()) {
@@ -267,7 +360,7 @@ class CDNode {
 			//If this happens, this should be only in the root node.
 			return;
 		}
-		if (this.final) { this.d.push(c); return;}
+		if (this.final) { this._add(c); return;}
 
 		//Now r is AABB.
 		// x y, x yn, xn y, xn yn
@@ -299,7 +392,7 @@ class CDNode {
 				return;
 			}
 			//the collider intersects with both c[0] and c[1]. It's added to this.
-			this.d.push(c);
+			this._add(c);
 			return; 
 		}
 		if (r.x < this.midpoint.x) {
@@ -330,22 +423,26 @@ class CDNode {
 				return;
 			}
 			//the collider intersects with both c[0] and c[1]. It's added to this.
-			this.d.push(c);
+			this._add(c);
 			return;
 		}
-		this.d.push(c);
+		this._add(c);
 		return;
 	}
-	
-
-
-
+	_add(c: ColliderBase) {
+		const i = c.g.i;
+		if (this.g.length - 1 <= i) {
+			for (let _i = this.g.length; _i <= i; _i++) {
+				this.g.push(new CDGroupInNode(collisionGroupMng._groups[_i]));
+			}
+		}
+		this.g[c.g.i].c.push(c);
+	}
 }
 
 class CollisionDetector {
 	prop: CollisionDetectorProp;
 	rootNode: CDNode;
-	c: ColliderBase[] = [];
 	constructor( prop: CollisionDetectorProp) {
 		{
 			const w = prop.border.width();
@@ -357,25 +454,28 @@ class CollisionDetector {
 		this.prop = prop;
 		this.rootNode = new CDNode(this,0,prop.border)
 	}
-	add(c: ColliderBase) { this.c.push(c);}
+	add(c: ColliderBase) {
+		this.rootNode.add(c);
+	}
+
+	clear() {
+		this.rootNode = new CDNode(this, 0, this.prop.border)
+	}
 
 	tick() {
-		this.rootNode = new CDNode(this, 0, this.prop.border)
-		this.c.forEach((c) => {
-			this.rootNode.add(c);
-		}) 
-		this.c = [];
-
 		let n = this.rootNode;
-		let i: __CDNodeChildNodeIndex = 0;
+		let i: __CDNodeChildNodeIndexWith4 = 0;
 		const nodes: CDNode[] = [];
 		const ind: __CDNodeChildNodeIndex[] = [];
-
 		while (true) {
-			if (n.c[i] !== null) {
-				nodes.push(n.c[i]!);
+			let n_c_i:CDNode|null;
+			if (i <= 3) { n_c_i = n.c[i]; }
+			else { n_c_i = null; }
+			//if i === 4, n_c_i is always null.
+			if (n_c_i !== null) {
+				nodes.push(n);
+				n = n_c_i;
 				ind.push(i as __CDNodeChildNodeIndex);
-				n = n.c[i]!;
 				i = 0;
 			}
 			else {
@@ -391,22 +491,43 @@ class CollisionDetector {
 					//Second, cross test with all the colliders from the nodes in path.
 					if (n === this.rootNode) { break; }
 					for (const guestNodes of nodes) {
-						for (const c1 of guestNodes.d) {
-							n.d.forEach((c2) => {
-								CollisionAlgo.apply(c1, c2);
+						if (guestNodes.g.length === 0) { continue; }
+						guestNodes.g.forEach((g1, gi1) => {
+							if (g1.c.length === 0) { return;}
+							n.g.forEach((g2, gi2) => {
+								if (g2.c.length === 0) { return;}
+								CDGroupInNode.detect(g1, g2, gi1, gi2);
+
+								//const hi = HGIN.g.i;
+								//const isC = GGIN.g.collides(hi);
+								//const isO = GGIN.g.overlaps(hi);
+								//if ((!isC) && (!isO)) { continue; }
+								////const gi = GGIN.g.i;
+								//
+								//GGIN.c.forEach((c1) => {
+								//	HGIN.c.forEach((c2) => {
+								//		CollisionAlgo.apply(c1, c2, isC);
+								//	})
+								//})
 							})
-						}
-					}
+						})
+					}//cross detection
+					n = nodes.pop()!;
+					i = (ind.pop()! + 1 )as __CDNodeChildNodeIndexWith4;
 				}
 			}
 		}
 	}
+
+	
+
 }
 
 export { Collider_circle, CollisionDetector, CollisionDetectorProp, CollisionEvent, collisionGroupMng, collisionSystemTestFunction };
 
 
 
+	const debug_cont: ColliderBase[] = [];
 function collisionSystemTestFunction() {
 	test1();
 }
@@ -415,16 +536,33 @@ function test1() {
 	const cdp = new CollisionDetectorProp(AABB.makeSafely(mapHalfSize, mapHalfSize, -mapHalfSize, -mapHalfSize), 1);
 	const cd = new CollisionDetector(cdp);
 
-	const debug_cont: ColliderBase[] = [];
-	let collider = new Collider_circle(new vec2(5, 1.1), 1, collisionGroupMng.getGroup("player"));
-	cd.add(collider);
-	debug_cont.push(collider)
-	collider = new Collider_circle(new vec2(5, 0), 0.5, collisionGroupMng.getGroup("enemy bullet"));
-	cd.add(collider);
-	debug_cont.push(collider)
-	collider = new Collider_circle(new vec2(4.4, 1.1), 0.5, collisionGroupMng.getGroup("enemy bullet"));
-	cd.add(collider);
-	debug_cont.push(collider)
+	if (1) {
+		let
+			collider = new Collider_circle(new vec2(5, 1.1), 1, collisionGroupMng.getGroup("player"));
+		cd.add(collider);
+		debug_cont.push(collider)
+		collider = new Collider_circle(new vec2(5, 1.1), 0.5, collisionGroupMng.getGroup("enemy bullet"));
+		cd.add(collider);
+		debug_cont.push(collider)
+		collider = new Collider_circle(new vec2(5, 0), 0.5, collisionGroupMng.getGroup("enemy bullet"));
+		cd.add(collider);
+		debug_cont.push(collider)
+		collider = new Collider_circle(new vec2(4.4, 1.1), 0.5, collisionGroupMng.getGroup("enemy bullet"));
+		cd.add(collider);
+		debug_cont.push(collider)
+	}
+
+	//If you want to test this, modify line 7 and 139.
+	//if (1) {
+	//	let
+	//	collider = new Collider_circle(new vec2(0, 0), 1, collisionGroupMng.getGroup("debug self overlap"));
+	//	cd.add(collider);
+	//	debug_cont.push(collider)
+	//	collider = new Collider_circle(new vec2(1, 0), 1, collisionGroupMng.getGroup("debug self overlap"));
+	//	cd.add(collider);
+	//	debug_cont.push(collider)
+	//}
+
 
 	cd.tick();
 
