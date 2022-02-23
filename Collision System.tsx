@@ -2,11 +2,17 @@
 //Only 2 type of detection can be done. Circle vs circle, square vs square.
 
 import { vec2,AABB } from './Linear Algebra of Dirac'
+export {
+	ColliderBase, Collider_circle,
+	CollisionEvent,
+	CollisionGroup,
+	CollisionDetector, CollisionDetectorProp, CollisionGroupMng, 
+};
 
 //First thing first. The collision group has to be done first and not modify any more.
-type CollisionGroupNames = "player" | "pl attack" | "enemy" | "enemy bullet" | "wall";//|"debug self overlap";
+//type CollisionGroupNames = "player" | "pl attack" | "enemy" | "enemy bullet" | "wall" | "debug self overlap";
 class CollisionGroup {
-	name: CollisionGroupNames;
+	name: string;
 	collidesSelf: boolean;
 	overlapsSelf: boolean;
 	i = -1;//index in the Mng.
@@ -14,7 +20,7 @@ class CollisionGroup {
 	collideInd: boolean[] = [];
 	overlapNames: string[] = [];
 	collideNames: string[] = [];
-	constructor(name: CollisionGroupNames, collidesSelf: boolean, overlapsSelf: boolean) {
+	constructor(name: string, collidesSelf: boolean, overlapsSelf: boolean) {
 		this.name = name;
 		this.collidesSelf = collidesSelf;
 		this.overlapsSelf = overlapsSelf;
@@ -30,10 +36,10 @@ class CollisionGroup {
 class CollisionGroupMng {
 	_groups: CollisionGroup[] = [];
 	_freeze = false;
-	getGroup(name: CollisionGroupNames) {
+	getGroup(name: string) {
 		return this._groups[this.groupIndexFromName(name)];
 	}
-	groupIndexFromName(name: CollisionGroupNames) {
+	groupIndexFromName(name: string) {
 		const r = this._groups.findIndex((ele) => name === ele.name);
 		//if (r < 0) { throw new Error("Bad param.") };
 		return r;
@@ -96,7 +102,7 @@ class CollisionGroupMng {
 	}
 	add(g: CollisionGroup) {
 		{//safety first.
-			if (this._freeze) {throw new Error("This manager is already freeze. To add any more collision group, edit this .tsx file.")}
+			if (this._freeze) {throw new Error("This manager is already freeze. Add collision group before freezing it.")}
 
 			const r = this._groups.findIndex((group) => {
 				if (group === g) { return true; }
@@ -109,37 +115,30 @@ class CollisionGroupMng {
 		this._groups.push(g);
 		g.i = this._groups.length - 1;
 	}
-}
-const collisionGroupMng = new CollisionGroupMng();
+	setRelation(name1: string, name2: string, isCollision:boolean) {
+		const r1 = this._groups.findIndex((cg) => { return cg.name === name1 });
+		if (r1 < 0) {throw new Error("name not found")}
+		const r2 = this._groups.findIndex((cg) => { return cg.name === name2 });
+		if (r2 < 0) { throw new Error("name not found") }
 
-
-//Add all the group here.
-{
-	//const groupNames = ["player", "pl attack", "enemy", "enemy bullet", "wall"] as const;
-	//The best sequence is according to the number, greater in the front, less in the end.
-	let
-	g = new CollisionGroup("enemy bullet", false, false);
-	g.overlapNames.push("player");
-	collisionGroupMng.add(g);
-	g = new CollisionGroup("enemy", false, false);
-	g.overlapNames.push("pl attack");
-	collisionGroupMng.add(g);
-
-	//g = new CollisionGroup("wall", false, false);
-	//g.collideNames.push("player");
-	//collisionGroupMng.add(g);
-
-	g = new CollisionGroup("pl attack", false, false);
-	g.overlapNames.push("enemy");
-	collisionGroupMng.add(g);
-	g = new CollisionGroup("player", false, false);
-	g.overlapNames.push("enemy bullet");
-	collisionGroupMng.add(g);
-
-	//g = new CollisionGroup("debug self overlap", false, true);
-	//collisionGroupMng.add(g);
-
-	collisionGroupMng.initializationFinish();
+		if (!this._freeze) {
+			if (isCollision) {
+				this._groups[r1].collideNames.push(name2);
+				this._groups[r2].collideNames.push(name1);
+			} else {
+				this._groups[r1].overlapNames.push(name2);
+				this._groups[r2].overlapNames.push(name1);
+			}
+		} else {
+			if (isCollision) {
+				this._groups[r1].collideInd[r2] = true;
+				this._groups[r2].collideInd[r1] = true;
+			} else {
+				this._groups[r1].overlapInd[r2] = true;
+				this._groups[r2].overlapInd[r1] = true;
+			}
+		}
+	}
 }
 
 
@@ -187,7 +186,7 @@ class Collider_circle extends ColliderBase{
 class CollisionDetectorProp {
 	readonly border: AABB;
 	readonly minTileSize: number;
-	constructor( border: AABB,  minTileSize: number) {
+	constructor(border: AABB, minTileSize: number) {
 		this.border =  border	  ;
 		this.minTileSize =  minTileSize;
 		if (this.border.xn >= this.border.x) { throw new Error("bad param") };
@@ -195,6 +194,17 @@ class CollisionDetectorProp {
 		if (this.minTileSize <= 0) { throw new Error("bad param") };
 	}
 }
+
+
+
+
+
+
+
+
+
+
+
 
 //All the detection algorithm
 //h === host, g === guest.
@@ -433,7 +443,7 @@ class CDNode {
 		const i = c.g.i;
 		if (this.g.length - 1 <= i) {
 			for (let _i = this.g.length; _i <= i; _i++) {
-				this.g.push(new CDGroupInNode(collisionGroupMng._groups[_i]));
+				this.g.push(new CDGroupInNode(this.cont.groupMng._groups[_i]));
 			}
 		}
 		this.g[c.g.i].c.push(c);
@@ -442,19 +452,26 @@ class CDNode {
 
 class CollisionDetector {
 	prop: CollisionDetectorProp;
+	groupMng: CollisionGroupMng;
 	rootNode: CDNode;
-	constructor( prop: CollisionDetectorProp) {
-		{
+	constructor(prop: CollisionDetectorProp, groupMng: CollisionGroupMng) {
+		{//safety
 			const w = prop.border.width();
 			const h = prop.border.height();
 			if (Math.abs(w - h) > (w / 1000)) {
 				throw new Error("Please use square. Rect may cause issues.")
 			}
-		}
+
+			if (!groupMng._freeze) {
+				throw new Error("Freeze the GroupMng before here. Call groupMng.initializationFinish().")
+			}
+		}//end of safety
 		this.prop = prop;
+		this.groupMng = groupMng;
 		this.rootNode = new CDNode(this,0,prop.border)
 	}
 	add(c: ColliderBase) {
+		c.events = [];
 		this.rootNode.add(c);
 	}
 
@@ -523,51 +540,4 @@ class CollisionDetector {
 
 }
 
-export { Collider_circle, CollisionDetector, CollisionDetectorProp, CollisionEvent, collisionGroupMng, collisionSystemTestFunction };
 
-
-
-	const debug_cont: ColliderBase[] = [];
-function collisionSystemTestFunction() {
-	test1();
-}
-function test1() {
-	const mapHalfSize = 10;
-	const cdp = new CollisionDetectorProp(AABB.makeSafely(mapHalfSize, mapHalfSize, -mapHalfSize, -mapHalfSize), 1);
-	const cd = new CollisionDetector(cdp);
-
-	if (1) {
-		let
-			collider = new Collider_circle(new vec2(5, 1.1), 1, collisionGroupMng.getGroup("player"));
-		cd.add(collider);
-		debug_cont.push(collider)
-		collider = new Collider_circle(new vec2(5, 1.1), 0.5, collisionGroupMng.getGroup("enemy bullet"));
-		cd.add(collider);
-		debug_cont.push(collider)
-		collider = new Collider_circle(new vec2(5, 0), 0.5, collisionGroupMng.getGroup("enemy bullet"));
-		cd.add(collider);
-		debug_cont.push(collider)
-		collider = new Collider_circle(new vec2(4.4, 1.1), 0.5, collisionGroupMng.getGroup("enemy bullet"));
-		cd.add(collider);
-		debug_cont.push(collider)
-	}
-
-	//If you want to test this, modify line 7 and 139.
-	//if (1) {
-	//	let
-	//	collider = new Collider_circle(new vec2(0, 0), 1, collisionGroupMng.getGroup("debug self overlap"));
-	//	cd.add(collider);
-	//	debug_cont.push(collider)
-	//	collider = new Collider_circle(new vec2(1, 0), 1, collisionGroupMng.getGroup("debug self overlap"));
-	//	cd.add(collider);
-	//	debug_cont.push(collider)
-	//}
-
-
-	cd.tick();
-
-	let fjdksljflkds = 5436546;
-
-
-
-}
